@@ -1,12 +1,14 @@
 classdef TyreModel < handle
     properties
-        kLonLin = -0.05;               % Long Lin Coeff
-        kLonTan = 0.5;                % Long Tan Coeff
-        kLonGain = 1.2;               % Long Peak Coeff
-        kLatLin = -0.05;               % Lat Lin Coeff
-        kLatTan = 0.5;                % Lat Tan Coeff
-        kLatGain = 1.2;               % Lat Peak Coeff
-        R = 0.35;                     % TLatre Radius
+        kLonTan = 0.8;              % Long Tan Coeff
+        kLonPos = 1.6;              % Long Peak Coeff
+        kLonTanDec = 0.2;           % Long Tan Decay Coeff
+        kLonDec = 0.8;              % Long Peak Decay Coeff
+        kLatTan = 0.8;              % Lat Tan Coeff
+        kLatPos = 1.6;              % Lat Peak Coeff
+        kLatTanDec = 0.2;           % Lat Tan Decay Coeff
+        kLatDec = 0.8;              % Lat Peak Decay Coeff
+        R = 0.35;                   % TLatre Radius
     end
     
     methods
@@ -14,26 +16,30 @@ classdef TyreModel < handle
             
         end
         
-        function [FLon, FLat, MRot] = GetForces(this, v, aSlip, nWhl, Fz)
+        function [FLon, FLat, MRot] = GetForces(this, v, aSlip, nWhl, Fz, rScale)
+            if nargin < 6
+                rScale = 1;
+            end
+            aSlipDeg = aSlip * 180 / pi;
             vWhl = v .* cos(aSlip);
             rSlip = (nWhl .* this.R - vWhl) ./ max(eps, vWhl);
-            rFLon = this.kLonLin .* rSlip + this.kLonGain * atan(this.kLonTan * rSlip);
-            rFLat = this.kLatLin .* aSlip + this.kLatGain * atan(this.kLatTan * aSlip);
-            FLon = Fz * rFLon;
-            FLat = Fz * rFLat;
+            rFLon = -this.kLonDec * atan(this.kLonTanDec * rSlip) + this.kLonPos * atan(this.kLonTan * rSlip);
+            rFLat = -this.kLatDec * atan(this.kLatTanDec * aSlipDeg) + this.kLatPos * atan(this.kLatTan * aSlipDeg);
+            FLon = Fz * rFLon * rScale;
+            FLat = -Fz * rFLat * rScale;
             MRot = FLon * this.R;
         end
         
-        function set.kLonLin(this, k)
+        function set.kLonPos(this, k)
             assert(isnumeric(k) && numel(k) == 1, 'Must be a scalar')
             assert(k < 0, 'Must be negative')
-            this.kLonLin = k;
+            this.kLonPos = k;
         end
         
-        function set.kLatLin(this, k)
+        function set.kLatPos(this, k)
             assert(isnumeric(k) && numel(k) == 1, 'Must be a scalar')
             assert(k < 0, 'Must be negative')
-            this.kLatLin = k;
+            this.kLatPos = k;
         end
         
         function set.kLonTan(this, k)
@@ -48,18 +54,29 @@ classdef TyreModel < handle
             this.kLatTan = k;
         end
         
-        function set.kLonGain(this, k)
+        function set.kLonDec(this, k)
             assert(isnumeric(k) && numel(k) == 1, 'Must be a scalar')
-            assert(k > 0, 'Must be positive')
-            this.kLonGain = k;
+            assert(k < 0, 'Must be negative')
+            this.kLonDec = k;
         end
         
-        function set.kLatGain(this, k)
+        function set.kLatDec(this, k)
             assert(isnumeric(k) && numel(k) == 1, 'Must be a scalar')
-            assert(k > 0, 'Must be positive')
-            this.kLatGain = k;
+            assert(k < 0, 'Must be negative')
+            this.kLatDec = k;
         end
         
+        function set.kLonTanDec(this, k)
+            assert(isnumeric(k) && numel(k) == 1, 'Must be a scalar')
+            assert(k > 0, 'Must be positive')
+            this.kLonTanDec = k;
+        end
+        
+        function set.kLatTanDec(this, k)
+            assert(isnumeric(k) && numel(k) == 1, 'Must be a scalar')
+            assert(k > 0, 'Must be positive')
+            this.kLatTanDec = k;
+        end        
     end
 end
         

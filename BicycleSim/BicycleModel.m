@@ -5,17 +5,20 @@ classdef BicycleModel < handle
         hCoG = 0.5;
         m = 1400;
         Jz = 3000;
-        PBrakeMax = 400000;
-        PMotorMax = 200000;
+        JWhlF = 1.0;
+        JWhlR = 1.0;
+        MBrakeMax = 5000;
+        MMotorMax = 3500;
         tyreF = TyreModel();
         tyreR = TyreModel();
-        JWhlF = 1.2;
-        JWhlR = 2.0;
+        aero = AeroModel();
     end
     
     properties (Access=protected)
-        u
-        s
+        u = zeros(2, 1);
+        s = zeros(5, 1);
+        BOutUpToDate = false;
+        Out
     end
     
     methods
@@ -24,17 +27,21 @@ classdef BicycleModel < handle
         end
         
         function SetInitialConditions(this, vLon, vLat, nYaw)
+            % set tyre slips to zero
             nWhlF = vLon / this.tyreF.R;
             nWhlR = vLon / this.tyreR.R;
             this.SetStates([vLon, vLat, nYaw, nWhlF, nWhlR]');
+            this.BOutUpToDate = false;
         end
         
         function SetInputs(this, aSteer, rPedal)
             this.u = [aSteer; rPedal];
+            this.BOutUpToDate = false;
         end
         
         function SetStates(this, s)
             this.s = s;
+            this.BOutUpToDate = false;
         end
         
         function s = GetStates(this)
@@ -42,15 +49,35 @@ classdef BicycleModel < handle
         end
         
         function dsdt = GetDerivatives(this)
-            [FxF, FyF, MyF, FxR, FyR, MyR] = this.GetTyreForces();
+            % get aero forces from aero model
+            [FxAero, FzAero] = this.GetAeroForces();
+            % get tyre forces
+            [FxF, FyF, MyF, FxR, FyR, MyR] = this.GetTyreForces(FzAero);
+            % calculate the tyre rotation
             [dnWhlF, dnWhlR] = this.GetWheelRotation(MyF, MyR);
             [Fx, Fy, Mz] = this.ResolveInCarFrame(FxF, FyF, FxR, FyR);
-            dsdt = this.CalcDerivatives(Fx, Fy, Mz, dnWhlF, dnWhlR);
+            % store outputs
+            this.Out.vLon = this.s(1);
+            this.Out.vLat = this.s(2);
+            this.Out.nYaw = this.s(3);
+            this.Out.nWhlF = this.s(4);
+            this.Out.nWhlR = this.s(5);
+            this.Out.gLon = (Fx + FxAero) / this.m;
+            this.Out.gLat = (Fy) / this.m;
+            this.Out.dnYaw = Mz / this.Jz;
+            this.Out.dnWhlF = dnWhlF;
+            this.Out.dnWhlR = dnWhlR;
+            this.BOutUpToDate = true;
+            % return state derivatives
+            dsdt = [this.Out.gLon; this.Out.gLat; this.Out.dnYaw; this.Out.dnWhlF; this.Out.dnWhlR];
         end
         
         function Out = GetOutputs(this)
-            this.GetDerivatives();
-            Out = struct('a', this.s(1));
+            % if we haven't made the calculation, make it
+            if ~this.BOutUpToDate
+                this.GetDerivatives();
+            end
+            Out = this.Out;
         end
         
         function set.m(this, m)
@@ -78,9 +105,14 @@ classdef BicycleModel < handle
             this.hCoG = h;
         end
         
-        function set.PMotorMax(this, P)
-            assert(isnumeric(P) && numel(P) == 1, 'Must be a scalar')
-            this.PMotorMax = P;
+        function set.MMotorMax(this, M)
+            assert(isnumeric(M) && numel(M) == 1, 'Must be a scalar')
+            this.MMotorMax = M;
+        end
+        
+        function set.MBrakeMax(this, M)
+            assert(isnumeric(M) && numel(M) == 1, 'Must be a scalar')
+            this.MBrakeMax = M;
         end
         
         function set.tyreF(this, tyre)
@@ -94,60 +126,67 @@ classdef BicycleModel < handle
         end
     end
     
-    methods (Access=protected)
-        function dsdt = CalcDerivatives(this, Fx, Fy, Mz, dnWhlF, dnWhlR)
-            dsdt = [
-                Fx / this.m
-                Fy / this.m
-                Mz / this.Jz
-                dnWhlF
-                dnWhlR
-                ];
-        end
-        
+    methods (Access=protected)        
         function [Fx, Fy, Mz] = ResolveInCarFrame(this, FxF, FyF, FxR, FyR)
-            aWhlF = this.u(1);
+            aWhlF = -this.u(1);
             aWhlR = 0;
             % Rotate Fx and Fy into car frame
-            Fx = FxF * cos(-aWhlF) + FyF * sin(-aWhlF) + FxR * cos(-aWhlR) + FyR * sin(-aWhlR);
-            FyFCar = FxF * sin(-aWhlF) + FyF * cos(-aWhlF);
-            FyRCar = FxR * sin(-aWhlR) + FyR * cos(-aWhlR);
+            FxFCar = FxF * cos(aWhlF) - FyF * sin(aWhlF);
+            FxRCar = FxR * cos(aWhlR) - FyR * sin(aWhlR);
+            FyFCar = FxF * sin(aWhlF) + FyF * cos(aWhlF);
+            FyRCar = FxR * sin(aWhlR) + FyR * cos(aWhlR);
             % Calculate total lateral force and moment about CoG
+            Fx = FxFCar + FxRCar;
             Fy = FyFCar + FyRCar;
             Mz = FyFCar * this.xCoG - FyRCar * (this.lWhlbase - this.xCoG);
         end
-                
+        
         function [dnWhlF, dnWhlR] = GetWheelRotation(this, MyF, MyR)
+            % get rotational velocities
             nF = this.s(4);
             nR = this.s(5);
-            PBrakeF = 2 / pi * atan(5 * nF) * min(0, this.u(2)) * this.PBrakeMax;
-            PBrakeR = 2 / pi * atan(5 * nR) * min(0, this.u(2)) * this.PBrakeMax;
-            PWhlF = PBrakeF;
-            PWhlR = PBrakeR + min(0, this.u(2)) * this.PBrakeMax;
-            dnWhlF = (PWhlF / nF - MyF) / this.JWhlF;
-            dnWhlR = (PWhlR / nR - MyR) / this.JWhlR;
+            % calculate braking and motor power
+            this.Out.MBrakeF = 2/pi * atan(5 * nF) * min(0, this.u(2)) * this.MBrakeMax;
+            this.Out.MBrakeR = 2/pi * atan(5 * nR) * min(0, this.u(2)) * this.MBrakeMax;
+            this.Out.MMotor = max(0, this.u(2)) * this.MMotorMax;
+            MWhlF = this.Out.MBrakeF;
+            MWhlR = this.Out.MBrakeR + this.Out.MMotor;
+            % calculate the rotational acceleration of the wheels
+            dnWhlF = (MWhlF - MyF) / this.JWhlF;
+            dnWhlR = (MWhlR - MyR) / this.JWhlR;
         end
         
-        function [FxF, FyF, MyF, FxR, FyR, MyR] = GetTyreForces(this)
+        function [Fx, Fz] = GetAeroForces(this)
+            vLon = this.s(1);
+            [Fx, Fz] = this.aero.GetForces(vLon);
+            % store outputs
+            this.Out.FAeroDrag = -Fx;
+            this.Out.FAeroLift = -Fz;
+        end
+        
+        function [FxF, FyF, MyF, FxR, FyR, MyR] = GetTyreForces(this, FzAero)
             % get initial guess of contact patch forces
-            [FzF, FzR] = this.GetTyreVerticalForces(0);
+            [FzF, FzR] = this.GetTyreVerticalForces(0, FzAero);
             [vF, aF, nF, vR, aR, nR] = this.GetTyreVelocities();
             % get longitudinal accel estimate and update vertical force
-            [FxF, FyF] = this.tyreF.GetForces(vF, aF, nF, FzF);
-            [FxR, FyR] = this.tyreR.GetForces(vR, aR, nR, FzR);
+            [FxF, FyF] = this.tyreF.GetForces(vF, aF, nF, FzF, 2);
+            [FxR, FyR] = this.tyreR.GetForces(vR, aR, nR, FzR, 2);
             Fx = this.ResolveInCarFrame(FxF, FyF, FxR, FyR);
             gLon = Fx / this.m;
             % get update of contact patch forces
-            [FzF, FzR] = this.GetTyreVerticalForces(gLon);
-            [FxF, FyF, MyF] = this.tyreF.GetForces(vF, aF, nF, FzF);
-            [FxR, FyR, MyR] = this.tyreR.GetForces(vR, aR, nR, FzR);
+            [FzF, FzR] = this.GetTyreVerticalForces(gLon, FzAero);
+            [FxF, FyF, MyF] = this.tyreF.GetForces(vF, aF, nF, FzF, 2);
+            [FxR, FyR, MyR] = this.tyreR.GetForces(vR, aR, nR, FzR, 2);
         end
         
-        function [FzF, FzR] = GetTyreVerticalForces(this, gLon)
+        function [FzF, FzR] = GetTyreVerticalForces(this, gLon, FzAero)
             a = this.xCoG;
             b = this.lWhlbase - this.xCoG;
-            FzF = this.m * (9.81 * b - this.hCoG * gLon) / this.lWhlbase;
-            FzR = this.m * (9.81 * a + this.hCoG * gLon) / this.lWhlbase;
+            % get front and rear vertical force
+            FzF = (-FzAero * a + this.m * 9.81 * b - this.hCoG * this.m * gLon) / this.lWhlbase;
+            FzR = (-FzAero * b + this.m * 9.81 * a + this.hCoG * this.m * gLon) / this.lWhlbase;
+            this.Out.FzF = FzF;
+            this.Out.FzR = FzR;
         end
         
         function [vF, aF, nF, vR, aR, nR] = GetTyreVelocities(this)
@@ -167,6 +206,11 @@ classdef BicycleModel < handle
             vR = sqrt(vLatAxlR ^ 2 + vLon ^ 2);
             aF = atan(vLatAxlF / vLon) - aSteerF;
             aR = atan(vLatAxlR / vLon) - aSteerR;
+            % store outputs
+            this.Out.aSlipF = aF;
+            this.Out.aSlipR = aR;
+            this.Out.rSlipF = (nF .* this.tyreF.R - vF .* cos(aF)) ./ max(eps, vF .* cos(aF));
+            this.Out.rSlipR = (nR .* this.tyreR.R - vR .* cos(aF)) ./ max(eps, vR .* cos(aR));
         end
     end
 end
