@@ -34,6 +34,38 @@ classdef BicycleModel < handle
             this.BOutUpToDate = false;
         end
         
+        function [u, s, itHist] = SolveSteadyState(this, v, gLon, gLat)
+            % solve quasi static steady state condition
+            % target velocity, longitudinal and lateral acceleration
+            % trim states and inputs to achieve target
+            x = zeros(6, 1);
+            % set state vector and constrain equation scalings
+            scX = [1, 1, 0.01, 0.01, 1, 1]';
+            scC = [0.1, 0.1, 1, 0.1, 1e-8, 1e-8]';
+            ceqfun = @(x)this.SteadyStateCEq(x, v, gLon, gLat, scX, scC);
+            % call solver
+            [x, itHist] = broyden(ceqfun, x);
+            x = x ./ scX;
+            u = x(1:2);
+            s = [v; x(3:end)];
+        end
+        
+        function c = SteadyStateCEq(this, x, v, gLon, gLat, scX, scC)
+            x = x .* scX;
+            this.SetInputs(x(1), x(2));
+            this.SetStates([v; x(3:end)]);
+            O = this.GetOutputs();
+            % constraints defined here
+            c = [
+                O.gLon - gLon
+                O.gLat - gLat
+                O.nYaw - (gLat / max(eps, v))
+                O.dnYaw
+                O.dnWhlF
+                O.dnWhlR
+                ] .* scC;
+        end
+        
         function SetInputs(this, aSteer, rPedal)
             this.u = [aSteer; rPedal];
             this.BOutUpToDate = false;
@@ -204,8 +236,8 @@ classdef BicycleModel < handle
             % resolve in wheel frame
             vF = sqrt(vLatAxlF ^ 2 + vLon ^ 2);
             vR = sqrt(vLatAxlR ^ 2 + vLon ^ 2);
-            aF = atan(vLatAxlF / vLon) - aSteerF;
-            aR = atan(vLatAxlR / vLon) - aSteerR;
+            aF = atan(vLatAxlF / max(eps, vLon)) - aSteerF;
+            aR = atan(vLatAxlR / max(eps, vLon)) - aSteerR;
             % store outputs
             this.Out.aSlipF = aF;
             this.Out.aSlipR = aR;
